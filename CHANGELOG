@@ -1,3 +1,7 @@
+* fork -- by arton *
+
+* move variables declaration to the top of the functions for VC++
+* put preconfigured Makefile for nmake. (enable iconv and ssl)
 
 * 0.4.5 *
 
