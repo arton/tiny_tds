@@ -27,9 +27,9 @@ typedef struct {
 
 
 // Lib Macros
-
+#define USE_CLIENT_USERDATA tinytds_client_userdata *userdata
 #define GET_CLIENT_USERDATA(dbproc) \
-  tinytds_client_userdata *userdata = (tinytds_client_userdata *)dbgetuserdata(dbproc);
+  userdata = (tinytds_client_userdata *)dbgetuserdata(dbproc);
 
 
 #endif

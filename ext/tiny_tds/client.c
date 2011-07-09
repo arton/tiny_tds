@@ -12,8 +12,8 @@ VALUE opt_escape_regex, opt_escape_dblquote;
 
 // Lib Macros
 
+#define USE_CLIENT_WRAPPER   tinytds_client_wrapper *cwrap
 #define GET_CLIENT_WRAPPER(self) \
-  tinytds_client_wrapper *cwrap; \
   Data_Get_Struct(self, tinytds_client_wrapper, cwrap)
 
 #define REQUIRE_OPEN_CLIENT(cwrap) \
@@ -26,6 +26,8 @@ VALUE opt_escape_regex, opt_escape_dblquote;
 // Lib Backend (Helpers)
 
 static VALUE rb_tinytds_raise_error(DBPROCESS *dbproc, int cancel, char *error, char *source, int severity, int dberr, int oserr) {
+    VALUE e;
+  USE_CLIENT_USERDATA;
   GET_CLIENT_USERDATA(dbproc);
   if (cancel && !dbdead(dbproc) && userdata && !userdata->closed) { 
     userdata->dbsqlok_sent = 1;
@@ -33,7 +35,7 @@ static VALUE rb_tinytds_raise_error(DBPROCESS *dbproc, int cancel, char *error, 
     userdata->dbcancel_sent = 1;
     dbcancel(dbproc);
   }
-  VALUE e = rb_exc_new2(cTinyTdsError, error);
+  e = rb_exc_new2(cTinyTdsError, error);
   rb_funcall(e, intern_source_eql, 1, rb_str_new2(source));
   if (severity)
     rb_funcall(e, intern_severity_eql, 1, INT2FIX(severity));
@@ -50,9 +52,10 @@ static VALUE rb_tinytds_raise_error(DBPROCESS *dbproc, int cancel, char *error, 
 
 int tinytds_err_handler(DBPROCESS *dbproc, int severity, int dberr, int oserr, char *dberrstr, char *oserrstr) { 
  static char *source = "error";
- GET_CLIENT_USERDATA(dbproc);
  int return_value = INT_CONTINUE;
  int cancel = 0;
+ USE_CLIENT_USERDATA;
+ GET_CLIENT_USERDATA(dbproc);
  switch(dberr) {
    case SYBESMSG:
      return return_value;
@@ -144,11 +147,13 @@ static VALUE allocate(VALUE klass) {
 // TinyTds::Client (public) 
 
 static VALUE rb_tinytds_tds_version(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return INT2FIX(dbtds(cwrap->client));
 }
 
 static VALUE rb_tinytds_close(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   if (cwrap->client && !cwrap->closed) {
     dbclose(cwrap->client);
@@ -159,26 +164,33 @@ static VALUE rb_tinytds_close(VALUE self) {
 }
 
 static VALUE rb_tinytds_dead(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return dbdead(cwrap->client) ? Qtrue : Qfalse;
 }
 
 static VALUE rb_tinytds_closed(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return (cwrap->closed || cwrap->userdata->closed) ? Qtrue : Qfalse;
 }
 
 static VALUE rb_tinytds_canceled(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return cwrap->userdata->dbcancel_sent ? Qtrue : Qfalse;
 }
 
 static VALUE rb_tinytds_sqlsent(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return cwrap->userdata->dbsql_sent ? Qtrue : Qfalse;
 }
 
 static VALUE rb_tinytds_execute(VALUE self, VALUE sql) {
+  VALUE result;
+  USE_CLIENT_WRAPPER;
+  USE_RESULT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   rb_tinytds_client_reset_userdata(cwrap->userdata);
   REQUIRE_OPEN_CLIENT(cwrap);
@@ -188,7 +200,7 @@ static VALUE rb_tinytds_execute(VALUE self, VALUE sql) {
     return Qfalse;
   }
   cwrap->userdata->dbsql_sent = 1;
-  VALUE result = rb_tinytds_new_result_obj(cwrap->client);
+  result = rb_tinytds_new_result_obj(cwrap->client);
   rb_iv_set(result, "@query_options", rb_funcall(rb_iv_get(self, "@query_options"), intern_dup, 0));
   GET_RESULT_WRAPPER(result);
   rwrap->local_offset = rb_funcall(cTinyTdsClient, intern_local_offset, 0);
@@ -199,11 +211,13 @@ static VALUE rb_tinytds_execute(VALUE self, VALUE sql) {
 }
 
 static VALUE rb_tinytds_charset(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   return cwrap->charset;
 }
 
 static VALUE rb_tinytds_encoding(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   #ifdef HAVE_RUBY_ENCODING_H
     return rb_enc_from_encoding(cwrap->encoding);
@@ -213,9 +227,11 @@ static VALUE rb_tinytds_encoding(VALUE self) {
 }
 
 static VALUE rb_tinytds_escape(VALUE self, VALUE string) {
+  VALUE new_string;
+  USE_CLIENT_WRAPPER;
   Check_Type(string, T_STRING);
   GET_CLIENT_WRAPPER(self);
-  VALUE new_string = rb_funcall(string, intern_gsub, 2, opt_escape_regex, opt_escape_dblquote);
+  new_string = rb_funcall(string, intern_gsub, 2, opt_escape_regex, opt_escape_dblquote);
   #ifdef HAVE_RUBY_ENCODING_H
     rb_enc_associate(new_string, cwrap->encoding);
   #endif
@@ -224,6 +240,7 @@ static VALUE rb_tinytds_escape(VALUE self, VALUE string) {
 
 /* Duplicated in result.c */
 static VALUE rb_tinytds_return_code(VALUE self) {
+  USE_CLIENT_WRAPPER;
   GET_CLIENT_WRAPPER(self);
   if (cwrap->client && dbhasretstat(cwrap->client)) {
     return LONG2NUM((long)dbretstatus(cwrap->client));
@@ -236,6 +253,7 @@ static VALUE rb_tinytds_return_code(VALUE self) {
 // TinyTds::Client (protected) 
 
 static VALUE rb_tinytds_connect(VALUE self, VALUE opts) {
+  USE_CLIENT_WRAPPER;
   /* Parsing options hash to local vars. */
   VALUE user, pass, dataserver, database, app, version, ltimeout, timeout, charset, azure;
   user = rb_hash_aref(opts, sym_username);
@@ -288,8 +306,10 @@ static VALUE rb_tinytds_connect(VALUE self, VALUE opts) {
       dbuse(cwrap->client, StringValuePtr(database));
     }
     #ifdef HAVE_RUBY_ENCODING_H
+    {
       VALUE transposed_encoding = rb_funcall(cTinyTdsClient, intern_transpose_iconv_encoding, 1, charset);
       cwrap->encoding = rb_enc_find(StringValuePtr(transposed_encoding));
+    }
     #endif
   }
   return self;

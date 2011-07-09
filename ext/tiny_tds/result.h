@@ -25,9 +25,8 @@ typedef struct {
 
 
 // Lib Macros
-
+#define USE_RESULT_WRAPPER tinytds_result_wrapper *rwrap
 #define GET_RESULT_WRAPPER(self) \
-  tinytds_result_wrapper *rwrap; \
   Data_Get_Struct(self, tinytds_result_wrapper, rwrap)
 
 

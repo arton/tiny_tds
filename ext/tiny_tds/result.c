@@ -15,16 +15,20 @@ static ID sym_symbolize_keys, sym_as, sym_array, sym_cache_rows, sym_first, sym_
 
 #ifdef HAVE_RUBY_ENCODING_H
   rb_encoding *binaryEncoding;
-  #define ENCODED_STR_NEW(_data, _len) ({ \
-    VALUE _val = rb_str_new((char *)_data, (long)_len); \
-    rb_enc_associate(_val, rwrap->encoding); \
-    _val; \
-  })
-  #define ENCODED_STR_NEW2(_data2) ({ \
-    VALUE _val = rb_str_new2((char *)_data2); \
-    rb_enc_associate(_val, rwrap->encoding); \
-    _val; \
-  })
+  VALUE encoded_str_new(char* _data, long _len, tinytds_result_wrapper *rwrap)
+  {
+    VALUE _val = rb_str_new((char *)_data, (long)_len); 
+    rb_enc_associate(_val, rwrap->encoding); 
+    return _val;
+  }
+  #define ENCODED_STR_NEW(_data, _len) encoded_str_new(_data, _len, rwrap)
+  VALUE encoded_str_new2(char* _data2, tinytds_result_wrapper *rwrap)
+  {
+    VALUE _val = rb_str_new2((char *)_data2); 
+    rb_enc_associate(_val, rwrap->encoding); 
+    return _val;
+  }
+ #define ENCODED_STR_NEW2(_data2) encoded_str_new2(_data2, rwrap)
 #else
   #define ENCODED_STR_NEW(_data, _len) \
     rb_str_new((char *)_data, (long)_len)
@@ -72,9 +76,10 @@ VALUE rb_tinytds_new_result_obj(DBPROCESS *c) {
 // Lib Backend (Helpers)
 
 static RETCODE rb_tinytds_result_dbresults_retcode(VALUE self) {
-  GET_RESULT_WRAPPER(self);
   VALUE ruby_rc;
   RETCODE db_rc;
+  USE_RESULT_WRAPPER;
+  GET_RESULT_WRAPPER(self);
   ruby_rc = rb_ary_entry(rwrap->dbresults_retcodes, rwrap->number_of_results);
   if (NIL_P(ruby_rc)) {
     db_rc = dbresults(rwrap->client);
@@ -87,6 +92,7 @@ static RETCODE rb_tinytds_result_dbresults_retcode(VALUE self) {
 }
 
 static RETCODE rb_tinytds_result_ok_helper(DBPROCESS *client) {
+  USE_CLIENT_USERDATA;
   GET_CLIENT_USERDATA(client);
   if (userdata->dbsqlok_sent == 0) {
     userdata->dbsqlok_retcode = dbsqlok(client);
@@ -96,6 +102,7 @@ static RETCODE rb_tinytds_result_ok_helper(DBPROCESS *client) {
 }
 
 static void rb_tinytds_result_cancel_helper(DBPROCESS *client) {
+  USE_CLIENT_USERDATA;
   GET_CLIENT_USERDATA(client);
   rb_tinytds_result_ok_helper(client);
   dbcancel(client);
@@ -104,12 +111,14 @@ static void rb_tinytds_result_cancel_helper(DBPROCESS *client) {
 }
 
 static VALUE rb_tinytds_result_fetch_row(VALUE self, ID timezone, int symbolize_keys, int as_array) {
+  VALUE row;
+  unsigned int i = 0;
   /* Wrapper And Local Vars */
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
   /* Create Empty Row */
-  VALUE row = as_array ? rb_ary_new2(rwrap->number_of_fields) : rb_hash_new();
+  row = as_array ? rb_ary_new2(rwrap->number_of_fields) : rb_hash_new();
   /* Storing Values */
-  unsigned int i = 0;
   for (i = 0; i < rwrap->number_of_fields; i++) {
     VALUE val = Qnil;
     int col = i+1;
@@ -138,7 +147,7 @@ static VALUE rb_tinytds_result_fetch_row(VALUE self, ID timezone, int symbolize_
         case SYBDECIMAL: { 
           DBTYPEINFO *data_info = dbcoltypeinfo(rwrap->client, col);
           int data_slength = (int)data_info->precision + (int)data_info->scale + 1;
-          char converted_decimal[data_slength];
+          char* converted_decimal = (char*)_alloca(data_slength);
           dbconvert(rwrap->client, coltype, data, data_len, SYBVARCHAR, (BYTE *)converted_decimal, -1);
           val = rb_funcall(cBigDecimal, intern_new, 1, rb_str_new2((char *)converted_decimal));
           break;
@@ -190,14 +199,15 @@ static VALUE rb_tinytds_result_fetch_row(VALUE self, ID timezone, int symbolize_
         }
         case SYBDATETIME: {
           DBDATEREC date_rec;
+          int year, month, day, hour, min, sec, msec;
           dbdatecrack(rwrap->client, &date_rec, (DBDATETIME *)data);
-          int year  = date_rec.dateyear,
-              month = date_rec.datemonth+1,
-              day   = date_rec.datedmonth,
-              hour  = date_rec.datehour,
-              min   = date_rec.dateminute,
-              sec   = date_rec.datesecond,
-              msec  = date_rec.datemsecond;
+          year  = date_rec.dateyear,
+          month = date_rec.datemonth+1,
+          day   = date_rec.datedmonth,
+          hour  = date_rec.datehour,
+          min   = date_rec.dateminute,
+          sec   = date_rec.datesecond,
+          msec  = date_rec.datemsecond;
           if (year+month+day+hour+min+sec+msec != 0) {
             VALUE offset = (timezone == intern_local) ? rwrap->local_offset : opt_zero;
             /* Use DateTime */
@@ -250,10 +260,14 @@ static VALUE rb_tinytds_result_fetch_row(VALUE self, ID timezone, int symbolize_
 // TinyTds::Client (public)
 
 static VALUE rb_tinytds_result_fields(VALUE self) {
+  RETCODE dbsqlok_rc;
+  RETCODE dbresults_rc;
+  VALUE fields_processed;
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
-  RETCODE dbsqlok_rc = rb_tinytds_result_ok_helper(rwrap->client);
-  RETCODE dbresults_rc = rb_tinytds_result_dbresults_retcode(self);
-  VALUE fields_processed = rb_ary_entry(rwrap->fields_processed, rwrap->number_of_results);
+  dbsqlok_rc = rb_tinytds_result_ok_helper(rwrap->client);
+  dbresults_rc = rb_tinytds_result_dbresults_retcode(self);
+  fields_processed = rb_ary_entry(rwrap->fields_processed, rwrap->number_of_results);
   if ((dbsqlok_rc == SUCCEED) && (dbresults_rc == SUCCEED) && (fields_processed == Qnil)) {
     /* Default query options. */
     VALUE qopts = rb_iv_get(self, "@query_options");
@@ -287,12 +301,14 @@ static VALUE rb_tinytds_result_fields(VALUE self) {
 }
 
 static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
-  GET_RESULT_WRAPPER(self);
-  GET_CLIENT_USERDATA(rwrap->client);
-  /* Local Vars */
   VALUE qopts, opts, block;
   ID timezone;
   int symbolize_keys = 0, as_array = 0, cache_rows = 0, first = 0;
+  USE_RESULT_WRAPPER;
+  USE_CLIENT_USERDATA;
+  GET_RESULT_WRAPPER(self);
+  GET_CLIENT_USERDATA(rwrap->client);
+  /* Local Vars */
   /* Merge Options Hash To Query Options. Populate Opts & Block Var. */
   qopts = rb_iv_get(self, "@query_options");
   if (rb_scan_args(argc, argv, "01&", &opts, &block) == 1)
@@ -317,9 +333,11 @@ static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
   }
   /* Make The Results Or Yield Existing */
   if (NIL_P(rwrap->results)) {
+    RETCODE dbsqlok_rc;
+    RETCODE dbresults_rc;
     rwrap->results = rb_ary_new();
-    RETCODE dbsqlok_rc = rb_tinytds_result_ok_helper(rwrap->client);
-    RETCODE dbresults_rc = rb_tinytds_result_dbresults_retcode(self);
+    dbsqlok_rc = rb_tinytds_result_ok_helper(rwrap->client);
+    dbresults_rc = rb_tinytds_result_dbresults_retcode(self);
     while ((dbsqlok_rc == SUCCEED) && (dbresults_rc == SUCCEED)) {
       int has_rows = (DBROWS(rwrap->client) == SUCCEED) ? 1 : 0;
       rb_tinytds_result_fields(self);
@@ -377,6 +395,8 @@ static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
 }
 
 static VALUE rb_tinytds_result_cancel(VALUE self) {
+  USE_RESULT_WRAPPER;
+  USE_CLIENT_USERDATA;
   GET_RESULT_WRAPPER(self);
   GET_CLIENT_USERDATA(rwrap->client);
   if (rwrap->client && !userdata->dbcancel_sent)
@@ -385,6 +405,7 @@ static VALUE rb_tinytds_result_cancel(VALUE self) {
 }
 
 static VALUE rb_tinytds_result_do(VALUE self) {
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
   if (rwrap->client) {
     rb_tinytds_result_cancel_helper(rwrap->client);
@@ -395,6 +416,7 @@ static VALUE rb_tinytds_result_do(VALUE self) {
 }
 
 static VALUE rb_tinytds_result_affected_rows(VALUE self) {
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
   if (rwrap->client) {
     return LONG2NUM((long)dbcount(rwrap->client));
@@ -405,6 +427,7 @@ static VALUE rb_tinytds_result_affected_rows(VALUE self) {
 
 /* Duplicated in client.c */
 static VALUE rb_tinytds_result_return_code(VALUE self) {
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
   if (rwrap->client && dbhasretstat(rwrap->client)) {
     return LONG2NUM((long)dbretstatus(rwrap->client));
@@ -414,10 +437,11 @@ static VALUE rb_tinytds_result_return_code(VALUE self) {
 }
 
 static VALUE rb_tinytds_result_insert(VALUE self) {
+  USE_RESULT_WRAPPER;
   GET_RESULT_WRAPPER(self);
   if (rwrap->client) {
-    rb_tinytds_result_cancel_helper(rwrap->client);
     VALUE identity = Qnil;
+    rb_tinytds_result_cancel_helper(rwrap->client);
     dbcmd(rwrap->client, "SELECT CAST(SCOPE_IDENTITY() AS bigint) AS Ident");
     if (dbsqlexec(rwrap->client) != FAIL && dbresults(rwrap->client) != FAIL && DBROWS(rwrap->client) != FAIL) {
       while (dbnextrow(rwrap->client) != NO_MORE_ROWS) {
