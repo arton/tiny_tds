@@ -1,4 +1,3 @@
-
 #include <tiny_tds_ext.h>
 
 VALUE cTinyTdsResult;
@@ -8,7 +7,7 @@ VALUE opt_decimal_zero, opt_float_zero, opt_one, opt_zero, opt_four, opt_19hdr, 
 int   opt_ruby_186;
 static ID intern_new, intern_utc, intern_local, intern_localtime, intern_merge, 
           intern_civil, intern_new_offset, intern_plus, intern_divide, intern_Rational;
-static ID sym_symbolize_keys, sym_as, sym_array, sym_cache_rows, sym_first, sym_timezone, sym_local, sym_utc;
+static ID sym_symbolize_keys, sym_as, sym_array, sym_cache_rows, sym_first, sym_timezone, sym_local, sym_utc, sym_include_empty_sets;
 
 
 // Lib Macros
@@ -303,7 +302,7 @@ static VALUE rb_tinytds_result_fields(VALUE self) {
 static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
   VALUE qopts, opts, block;
   ID timezone;
-  int symbolize_keys = 0, as_array = 0, cache_rows = 0, first = 0;
+  int symbolize_keys = 0, as_array = 0, cache_rows = 0, first = 0, include_empty_sets = 0;
   USE_RESULT_WRAPPER;
   USE_CLIENT_USERDATA;
   GET_RESULT_WRAPPER(self);
@@ -331,6 +330,9 @@ static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
     rb_warn(":timezone option must be :utc or :local - defaulting to :local");
     timezone = intern_local;
   }
+  if (rb_hash_aref(qopts, sym_include_empty_sets) == Qtrue )
+    include_empty_sets = 1;
+    
   /* Make The Results Or Yield Existing */
   if (NIL_P(rwrap->results)) {
     RETCODE dbsqlok_rc;
@@ -339,7 +341,7 @@ static VALUE rb_tinytds_result_each(int argc, VALUE * argv, VALUE self) {
     dbsqlok_rc = rb_tinytds_result_ok_helper(rwrap->client);
     dbresults_rc = rb_tinytds_result_dbresults_retcode(self);
     while ((dbsqlok_rc == SUCCEED) && (dbresults_rc == SUCCEED)) {
-      int has_rows = (DBROWS(rwrap->client) == SUCCEED) ? 1 : 0;
+      int has_rows = ( include_empty_sets || (DBROWS(rwrap->client) == SUCCEED) ) ? 1 : 0;
       rb_tinytds_result_fields(self);
       if (has_rows && rwrap->number_of_fields > 0) {
         /* Create rows for this result set. */
@@ -497,6 +499,7 @@ void init_tinytds_result() {
   sym_local = ID2SYM(intern_local);
   sym_utc = ID2SYM(intern_utc);
   sym_timezone = ID2SYM(rb_intern("timezone"));
+  sym_include_empty_sets = ID2SYM(rb_intern("include_empty_sets"));
   /* Data Conversion Options */
   opt_decimal_zero = rb_str_new2("0.0");
   rb_global_variable(&opt_decimal_zero);
