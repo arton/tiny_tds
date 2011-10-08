@@ -1,4 +1,5 @@
 #include <tiny_tds_ext.h>
+#include <stdint.h>
 
 VALUE cTinyTdsResult;
 extern VALUE mTinyTds, cTinyTdsClient, cTinyTdsError;
