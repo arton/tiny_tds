@@ -1,4 +1,3 @@
-
 #include <tiny_tds_ext.h>
 #include <errno.h>
 
@@ -57,6 +56,8 @@ int tinytds_err_handler(DBPROCESS *dbproc, int severity, int dberr, int oserr, c
  USE_CLIENT_USERDATA;
  GET_CLIENT_USERDATA(dbproc);
  switch(dberr) {
+   case 100: /* SYBEVERDOWN */
+     return INT_CANCEL;
    case SYBESMSG:
      return return_value;
    case SYBEICONVI:
