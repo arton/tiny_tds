@@ -7,18 +7,12 @@ class C89AdhocParser
     def initialize
       @declare = []
       @body = []
-      @rwrapper = false
-      @cwrapper = false
-      @cuserdata = false
     end
-    attr_accessor :declare, :rwrapper, :cwrapper, :cuserdata
+    attr_accessor :declare
     def add(blk)
       @body.push blk
     end
     def flush(w)
-      w.puts '  tinytds_result_wrapper *rwrap;' if @rwrapper
-      w.puts '  tinytds_client_wrapper *cwrap;' if @cwrapper      
-      w.puts '  tinytds_client_userdata *userdata;' if @cuserdata
       @declare.each do |x|
         w.puts x
       end
@@ -32,31 +26,91 @@ class C89AdhocParser
     end
   end
   
+  class Replacement
+    def initialize(start, rep, stop)
+      @start = start
+      @rep = rep
+      @stop = stop
+    end
+    def start?(s, b, w)
+      if s =~ @start
+        @rep.call(s, b, w)
+      end
+    end
+    def stop?(s, b, w)
+      s =~ @stop
+    end
+  end
+  
+  REPS = [
+    Replacement.new(/\A#ifdef HAVE_RUBY_ENCODING_H/,
+                    Proc.new do |s, b, w|
+                      w.write s
+                      w.write <<D
+  VALUE encoded_str_new(_data, _len, rwrap) {
+    VALUE _val = rb_str_new((char *)_data, (long)_len); 
+    rb_enc_associate(_val, rwrap->encoding); 
+    return _val;
+  }
+  VALUE encoded_str_new2(_data2, rwrap) {
+    VALUE _val = rb_str_new2((char *)_data2);
+    rb_enc_associate(_val, rwrap->encoding);
+    return _val;
+  }
+  #define ENCODED_STR_NEW(_data, _len) encoded_str_new(_data, _len, rwrap)
+  #define ENCODED_STR_NEW2(_data2) encoded_str_new2(_data2, rwrap)
+#else
+D
+                      true
+                    end,
+                    /\A#else/,
+                    ),
+    Replacement.new(/\A\s*GET_RESULT_WRAPPER/,
+                    Proc.new do |s, b, w|
+                      s.sub!(/GET_RESULT_WRAPPER\(([^)]+)/, 'Data_Get_Struct(\1, tinytds_result_wrapper, rwrap')
+                      b.declare << '  tinytds_result_wrapper *rwrap;'
+                      nil
+                    end,
+                    nil),
+    Replacement.new(/\A\s*GET_CLIENT_WRAPPER/,
+                    Proc.new do |s, b, w|
+                      s.sub!(/GET_CLIENT_WRAPPER\(([^)]+)/, 'Data_Get_Struct(\1, tinytds_client_wrapper, cwrap')
+                      b.declare << '  tinytds_client_wrapper *cwrap;'
+                      nil
+                    end,
+                    nil),
+    Replacement.new(/\A\s*GET_CLIENT_USERDATA/,
+                    Proc.new do |s, b, w|
+                      s.sub!(/GET_CLIENT_USERDATA\(([^)]+)/, 'userdata = (tinytds_client_userdata *)dbgetuserdata(\1')
+                      b.declare << '  tinytds_client_userdata *userdata;'
+                      nil
+                    end,
+                    nil),
+         ]
+
   def initialize
     @cfunc = nil
     @cblk = nil
+    @repl = nil
     @idle = Proc.new do |x, w|
-      w.write x
-      if x =~ /\A\s*[a-zA-Z]\w*\s+(?:[a-zA-Z]\w*\s+)?\w+\([a-zA-Z0-9_*, ]*\)\s*{\s*\z/
-        @cblk = Block.new
-        @cfunc = [@cblk]
-        @infun
-      else
+      if check_replacements(x, w)
         @idle
+      else  
+        w.write x
+        if x =~ /\A\s*[a-zA-Z]\w*\s+(?:[a-zA-Z]\w*\s+)?\w+\([a-zA-Z0-9_*, ]*\)\s*{\s*\z/
+          @cblk = Block.new
+          @cfunc = [@cblk]
+          @infun
+        else
+          @idle
+        end
       end
     end
+    
     @infun = Proc.new do |x, w|
-      if x=~ /GET_RESULT_WRAPPER/
-        x.sub!(/GET_RESULT_WRAPPER\(([^)]+)/, 'Data_Get_Struct(\1, tinytds_result_wrapper, rwrap')
-        @cblk.rwrapper = true
-      elsif x =~ /GET_CLIENT_WRAPPER/
-        x.sub!(/GET_CLIENT_WRAPPER\(([^)]+)/, 'Data_Get_Struct(\1, tinytds_client_wrapper, cwrap')
-        @cblk.cwrapper = true
-      elsif x =~ /GET_CLIENT_USERDATA/
-        x.sub!(/GET_CLIENT_USERDATA\(([^)]+)/, 'userdata = (tinytds_client_userdata *)dbgetuserdata(\1')
-        @cblk.cuserdata = true  
-      end
-      if x =~ /\A}\s*\z/
+      if check_replacements(x, w)
+        @infun
+      elsif x =~ /\A}\s*\z/
         @cblk.add x   
         @cblk.flush w
         @idle
@@ -65,17 +119,11 @@ class C89AdhocParser
           @cblk = @cfunc.pop
           @cblk.add x
           if $1
-            blk = Block.new
-            @cblk.add blk
-            @cfunc.push @cblk
-            @cblk = blk
+            new_block
           end
         elsif x =~ /\A.+{\s*\z/
-          @cblk.add x          
-          blk = Block.new
-          @cblk.add blk
-          @cfunc.push @cblk
-          @cblk = blk
+          @cblk.add x    
+          new_block
         else
           if x =~ /\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)(\s*=.+)\Z/
             @cblk.declare << "#{$1}#{$2} #{$3};"
@@ -107,6 +155,25 @@ class C89AdhocParser
       w.puts line
     end
     @body.pop
+  end
+
+  def new_block
+    blk = Block.new
+    @cblk.add blk
+    @cfunc.push @cblk
+    @cblk = blk
+  end
+  
+  def check_replacements(x, w)
+    if @repl
+      if @repl.stop?(x, @cblk, w)
+        @repl = nil
+        return true
+      end
+    else
+      @repl = REPS.find { |e| e.start?(x, @cblk, w) }
+    end
+    @repl
   end
 end
 
