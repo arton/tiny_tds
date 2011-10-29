@@ -13,7 +13,7 @@ class C89AdhocParser
       @body.push blk
     end
     def flush(w)
-      @declare.each do |x|
+      @declare.uniq.each do |x|
         w.puts x
       end
       @body.each do |x|
@@ -38,7 +38,11 @@ class C89AdhocParser
       end
     end
     def stop?(s, b, w)
-      s =~ @stop
+      if Regexp === @stop
+        s =~ @stop
+      else
+        @stop.call(s, b, w)
+      end
     end
   end
   
@@ -47,12 +51,13 @@ class C89AdhocParser
                     Proc.new do |s, b, w|
                       w.write s
                       w.write <<D
-  VALUE encoded_str_new(_data, _len, rwrap) {
+  rb_encoding *binaryEncoding;
+  VALUE encoded_str_new(char* _data, DBINT _len, tinytds_result_wrapper* rwrap) {
     VALUE _val = rb_str_new((char *)_data, (long)_len); 
     rb_enc_associate(_val, rwrap->encoding); 
     return _val;
   }
-  VALUE encoded_str_new2(_data2, rwrap) {
+  VALUE encoded_str_new2(char* _data2, tinytds_result_wrapper* rwrap) {
     VALUE _val = rb_str_new2((char *)_data2);
     rb_enc_associate(_val, rwrap->encoding);
     return _val;
@@ -86,20 +91,35 @@ D
                       nil
                     end,
                     nil),
+    Replacement.new(/\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)(\s*=[^;,]+,)\s*\Z/,
+                    Proc.new do |s, b, w|
+                      b.declare << s
+                    end,
+                    Proc.new do |s, b, w|
+                      b.declare << s
+                      if s =~ /\A(\s*)(\*?\w+(?:\[[^\]]*\])?)(\s*=[^;]+;)\s*\Z/
+                        true
+                      else
+                        nil
+                      end  
+                    end),
          ]
 
   def initialize
     @cfunc = nil
     @cblk = nil
     @repl = nil
+    @depth = 0
     @idle = Proc.new do |x, w|
       if check_replacements(x, w)
         @idle
       else  
         w.write x
         if x =~ /\A\s*[a-zA-Z]\w*\s+(?:[a-zA-Z]\w*\s+)?\w+\([a-zA-Z0-9_*, ]*\)\s*{\s*\z/
+          p "----------start function #{$1}" if $DEBUG
           @cblk = Block.new
           @cfunc = [@cblk]
+          @depth = 0
           @infun
         else
           @idle
@@ -115,20 +135,28 @@ D
         @cblk.flush w
         @idle
       else
-        if x =~ /\A\s*}\s*(?:else(?:\s+if\s*\([^)]+\))?\s*({))?\s*\Z/
+        if x =~ /\A\s*}\s*(?:else(?:\s+if\s*\(.+\))?\s*({))?\s*\z/
+          p "---restore #{@depth -= 1}:#{x}" if $DEBUG
           @cblk = @cfunc.pop
           @cblk.add x
           if $1
+            p "---new block #{@depth += 1}:#{x}" if $DEBUG
             new_block
           end
         elsif x =~ /\A.+{\s*\z/
           @cblk.add x    
+          p "---new block #{@depth += 1}:#{x}" if $DEBUG
           new_block
         else
-          if x =~ /\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)(\s*=.+)\Z/
+          if x =~ /\A(\s*)(\w+)\s+(\w+)\[([a-z]\w*)\]\s*;\s*\z/
+            @cblk.declare << "#{$1}#{$2} *#{$3};"
+            @cblk.add "#{$1}#{$3} = (#{$2}*)_alloca(sizeof(#{$2}) * #{$4});"
+          elsif x =~ /\A(?:\s*)(?:(?:(?:un)?signed|long)\s+)?\w+\s+(?:\*?\w+\s*=\s*\d+\s*,\s*)+\*?\w+\s*=\s*\d+\s*;\s*\z/
+            @cblk.declare << x
+          elsif x =~ /\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)(\s*=.+)\Z/
             @cblk.declare << "#{$1}#{$2} #{$3};"
             @cblk.add "#{$1}#{$3[0] == '*' ? $3[1..-1] : $3}#{$4}"
-          elsif x =~ /\A(?:\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)\s*;\s*\z/ && $1 != 'return'
+          elsif x =~ /\A(?:\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(:?\*?\w+(?:\[[^]]*\])?\s*,\s*)*(\*?\w+(?:\[[^]]*\])?)\s*;\s*\z/ && $1 != 'return'
             @cblk.declare << x
           else
             @cblk.add x.rstrip
@@ -180,12 +208,18 @@ end
 
 if __FILE__ == $0
   ARGV.each do |x|
-    fout = Tempfile.new('c89adfoc')
+    if $DEBUG
+      fout = $stdout
+    else  
+      fout = Tempfile.new('c89adfoc')
+    end
     File.open(x, 'r') do |fin|
       C89AdhocParser.new.parse fin, fout
     end
-    fout.close(false)
-    FileUtils.mv x, "#{x}.bak"
-    FileUtils.mv fout.path, x
+    unless $DEBUG
+      fout.close(false)
+      FileUtils.mv x, "#{x}.bak"
+      FileUtils.mv fout.path, x
+    end
   end
 end
