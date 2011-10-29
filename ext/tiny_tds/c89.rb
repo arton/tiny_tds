@@ -91,13 +91,17 @@ D
                       nil
                     end,
                     nil),
-    Replacement.new(/\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?\w+(?:\[[^]]*\])?)(\s*=[^;,]+,)\s*\Z/,
+    Replacement.new(startrex = /\A(\s*)((?:(?:(?:un)?signed|long)\s+)?\w+\*?)\s+(\*?(\w+)(?:\[[^]]*\])?)(\s*=[^;,]+),\s*\Z/,
                     Proc.new do |s, b, w|
-                      b.declare << s
+                      s =~ startrex
+                      b.declare << "#{$1}#{$2} #{$3},"
+                      b.add "#{$1}#{$4}#{$5};"
                     end,
                     Proc.new do |s, b, w|
-                      b.declare << s
-                      if s =~ /\A(\s*)(\*?\w+(?:\[[^\]]*\])?)(\s*=[^;]+;)\s*\Z/
+                      s =~ /\A(\s*)(\*?\w+(?:\[[^\]]*\])?)(\s*=[^;,]+)([,;])\s*\Z/
+                      b.declare << "#{$1}#{$2}#{$4}"
+                      b.add "#{$1}#{$2}#{$3};"
+                      if $4 == ';'
                         true
                       else
                         nil
